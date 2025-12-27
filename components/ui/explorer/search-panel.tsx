@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 
 type PlaceResult = {
+    provider: "mock";
     id: string;
     name: string;
     address: string;
@@ -22,25 +23,11 @@ function mockResults(query: string): PlaceResult[] {
     // mock data below ( replace with real api call later)
 
     return [
-        {
-            id: "1",
-            name: `${q} Art Center`,
-            address: `Downtown, ${q}`,
-            category: "Museum",
-        },
-        {
-            id: "2",
-            name: `${q} Waterfront Walk`,
-            address: `Harbourfront, ${q}`,
-            category: "Outdoor",
-        },
-        {
-            id: "3",
-            name: `${q} Food Market`,
-            address: `Market District, ${q}`,
-            category: "Food",
-        },
-    ];
+  { provider: "mock", id: "1", name: `${q} Art Center`, address: `Downtown, ${q}`, category: "Museum" },
+  { provider: "mock", id: "2", name: `${q} Waterfront Walk`, address: `Harbourfront, ${q}`, category: "Outdoor" },
+  { provider: "mock", id: "3", name: `${q} Food Market`, address: `Market District, ${q}`, category: "Food" },
+];
+
 }
 
 export default function SearchPanel() {
