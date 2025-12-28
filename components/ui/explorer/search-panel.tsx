@@ -54,27 +54,13 @@ async function removePlace(placeId: string) {
 }
 
 type PlaceResult = {
-    provider: "mock";
+    provider: "mock" | "osm";
     providerId: string;
     name: string;
     address: string;
     category?: string;
 };
 
-function mockResults(query: string): PlaceResult[] {
-    const q = query.trim();
-
-    if(!q) return [];
-
-    // mock data below ( replace with real api call later)
-
-    return [
-  { provider: "mock", providerId: "1", name: `${q} Art Center`, address: `Downtown, ${q}`, category: "Museum" },
-  { provider: "mock", providerId: "2", name: `${q} Waterfront Walk`, address: `Harbourfront, ${q}`, category: "Outdoor" },
-  { provider: "mock", providerId: "3", name: `${q} Food Market`, address: `Market District, ${q}`, category: "Food" },
-];
-
-}
 
 export default function SearchPanel() {
     const [query, setQuery] = useState("");
@@ -117,12 +103,28 @@ export default function SearchPanel() {
         setLoading(true);
         setResults([]);
 
-        // network latency ( not really)
-        await new Promise((r) => setTimeout(r, 250));
 
-        setResults(mockResults(q));
-        setLoading(false);
+        try {
+          const res = await fetch(`/api/places?q=${encodeURIComponent(q)}`, {
+            cache: "no-store",
+          });
+
+          if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            throw new Error(`Failed to fetch places: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
+          }
+
+          const data = (await res.json()) as PlaceResult[];
+          setResults(data);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Search failed");
+          setResults([]);
+        } finally {
+          setLoading(false);
+        }
+
     }
+
     return (
     <Card className="w-full">
       <CardHeader>
@@ -164,7 +166,7 @@ export default function SearchPanel() {
                         <p className="text-sm text-muted-foreground">{s.address}</p>
                       ) : null}
                     </div>
-
+                      
                     <div className="flex items-center gap-2">
                       {s.category ? <Badge variant="secondary">{s.category}</Badge> : null}
                       <Button
