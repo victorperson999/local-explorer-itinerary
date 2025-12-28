@@ -1,15 +1,61 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 
+type SavedItem = {
+  placeId: string;
+  provider: string;
+  providerId: string;
+  name: string;
+  address: string | null;
+  category: string | null;
+};
+
+async function fetchSaved(): Promise<SavedItem[]> {
+  const res = await fetch("/api/saved", { cache: "no-store" });
+  if(!res.ok){
+    throw new Error("Failed to load saved places")
+  }
+  return res.json();
+}
+
+async function savePlace(p: PlaceResult) {
+  const res = await fetch("/api/saved", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      provider: p.provider,
+      providerId: p.providerId,
+      name: p.name,
+      address: p.address,
+      category: p.category,
+
+    }),
+  });
+  if(!res.ok){
+    throw new Error("Failed to save place");
+  }
+}
+
+async function removePlace(placeId: string) {
+  const res = await fetch("/api/saved", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ placeId }),
+  });
+  if(!res.ok){
+    throw new Error("Failed to remove place");
+  }
+}
+
 type PlaceResult = {
     provider: "mock";
-    id: string;
+    providerId: string;
     name: string;
     address: string;
     category?: string;
@@ -23,9 +69,9 @@ function mockResults(query: string): PlaceResult[] {
     // mock data below ( replace with real api call later)
 
     return [
-  { provider: "mock", id: "1", name: `${q} Art Center`, address: `Downtown, ${q}`, category: "Museum" },
-  { provider: "mock", id: "2", name: `${q} Waterfront Walk`, address: `Harbourfront, ${q}`, category: "Outdoor" },
-  { provider: "mock", id: "3", name: `${q} Food Market`, address: `Market District, ${q}`, category: "Food" },
+  { provider: "mock", providerId: "1", name: `${q} Art Center`, address: `Downtown, ${q}`, category: "Museum" },
+  { provider: "mock", providerId: "2", name: `${q} Waterfront Walk`, address: `Harbourfront, ${q}`, category: "Outdoor" },
+  { provider: "mock", providerId: "3", name: `${q} Food Market`, address: `Market District, ${q}`, category: "Food" },
 ];
 
 }
@@ -36,7 +82,28 @@ export default function SearchPanel() {
     const [error, setError] = useState<string | null>(null);
     const [results, setResults] = useState<PlaceResult[]>([]);
 
+    const [saved, setSaved] = useState<SavedItem[]>([]);
+    const [savingKey, setSavingKey] = useState<string | null>(null);
+
+
     const canSearch = useMemo(() => query.trim().length > 0 && !loading, [query, loading] );
+
+    const savedKeys = useMemo(
+      () => new Set(saved.map((s) => `${s.provider}:${s.providerId}`)),
+      [saved]
+    );
+
+    useEffect(() => {
+      fetchSaved()
+        .then(setSaved)
+        .catch(() =>{
+
+        });
+    }, []);
+
+    async function refreshSaved() {
+      setSaved(await fetchSaved());
+    }
 
     async function onSearch() {
         const q = query.trim();
@@ -84,6 +151,50 @@ export default function SearchPanel() {
 
         <Separator />
 
+        {saved.length > 0 ? (
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Saved</p>
+            <ul className="space-y-2">
+              {saved.map((s) => (
+                <li key={s.placeId} className="rounded-lg border p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium">{s.name}</p>
+                      {s.address ? (
+                        <p className="text-sm text-muted-foreground">{s.address}</p>
+                      ) : null}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {s.category ? <Badge variant="secondary">{s.category}</Badge> : null}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={savingKey === `remove:${s.placeId}`}
+                        onClick={async () => {
+                          try {
+                            setSavingKey(`remove:${s.placeId}`);
+                            await removePlace(s.placeId);
+                            await refreshSaved();
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : "Failed to remove place");
+                          } finally {
+                            setSavingKey(null);
+                          }
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <Separator />
+          </div>
+        ) : null}
+
+
         {results.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             Results will show up here. Next step: connect a real Places API via a Next.js route handler.
@@ -96,14 +207,38 @@ export default function SearchPanel() {
 
             <ul className="space-y-2">
               {results.map((r) => (
-                <li key={r.id} className="rounded-lg border p-3">
-                  <div className="flex items-start justify-between gap-3">
+                <li key={r.providerId} className="rounded-lg border p-3">
+                  <div className="flex items-start justify-between gap-3"> 
                     <div>
                       <p className="font-medium">{r.name}</p>
                       <p className="text-sm text-muted-foreground">{r.address}</p>
                     </div>
-                    {r.category ? <Badge variant="secondary">{r.category}</Badge> : null}
+
+                    <div className="flex items-center gap-2">
+                      {r.category ? <Badge variant="secondary">{r.category}</Badge> : null}
+
+                      <Button
+                        size="sm"
+                        variant={savedKeys.has(`${r.provider}:${r.providerId}`) ? "secondary" : "default"}
+                        disabled={savingKey === `${r.provider}:${r.providerId}`}
+                        onClick={async () => {
+                          const key = `${r.provider}:${r.providerId}`;
+                          try {
+                            setSavingKey(key);
+                            await savePlace(r);
+                            await refreshSaved();
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : "Failed to save place");
+                          } finally {
+                            setSavingKey(null);
+                          }
+                        }}
+                      >
+                        {savedKeys.has(`${r.provider}:${r.providerId}`) ? "Saved" : "Save"}
+                      </Button>
+                    </div>
                   </div>
+
                 </li>
               ))}
             </ul>
