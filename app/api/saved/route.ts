@@ -1,12 +1,25 @@
-export const runtime = "nodejs"
+export const runtime = "nodejs";
+
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/lib/auth";
 
-const DEMO_USER = "demo"; // temp user; we’ll replace with real auth later
+async function requireUserId() {
+  const session = await getServerSession(authOptions);
+  const userId = (session?.user as any)?.id as string | undefined;
+  if (!userId) return null;
+  return userId
+}
+
 
 export async function GET() {
+  const userId = await requireUserId();
+
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const saved = await prisma.savedPlace.findMany({
-    where: { savedBy: DEMO_USER },
+    where: { savedById: userId },
     include: { place: true },
     orderBy: { createdAt: "desc" },
   });
@@ -26,6 +39,10 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const userId = await requireUserId();
+
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const body = await req.json();
   const { provider, providerId, name, address, category } = body ?? {};
 
@@ -39,19 +56,29 @@ export async function POST(req: Request) {
   const place = await prisma.place.upsert({
     where: { provider_providerId: { provider, providerId } },
     update: { name, address: address ?? null, category: category ?? null },
-    create: { provider, providerId, name, address: address ?? null, category: category ?? null },
+    create: {
+      provider,
+      providerId,
+      name,
+      address: address ?? null,
+      category: category ?? null,
+    },
   });
 
   await prisma.savedPlace.upsert({
-    where: { savedBy_placeId: { savedBy: DEMO_USER, placeId: place.id } },
+    where: { savedById_placeId: { savedById: userId, placeId: place.id } },
     update: {},
-    create: { savedBy: DEMO_USER, placeId: place.id },
+    create: { savedById: userId, placeId: place.id },
   });
 
   return NextResponse.json({ ok: true, placeId: place.id });
 }
 
 export async function DELETE(req: Request) {
+  const userId = await requireUserId();
+
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const body = await req.json();
   const { placeId } = body ?? {};
 
@@ -60,7 +87,7 @@ export async function DELETE(req: Request) {
   }
 
   await prisma.savedPlace.deleteMany({
-    where: { savedBy: DEMO_USER, placeId },
+    where: { savedById: userId, placeId },
   });
 
   return NextResponse.json({ ok: true });

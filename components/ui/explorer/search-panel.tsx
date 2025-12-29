@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 
+import { useSession, signIn } from "next-auth/react";
+import AuthButton from "@/components/explorer/auth-button";
+
 type SavedItem = {
   placeId: string;
   provider: string;
@@ -18,6 +21,7 @@ type SavedItem = {
 
 async function fetchSaved(): Promise<SavedItem[]> {
   const res = await fetch("/api/saved", { cache: "no-store" });
+  if (res.status === 401) return []; // not signed in yet
   if(!res.ok){
     throw new Error("Failed to load saved places")
   }
@@ -71,6 +75,11 @@ export default function SearchPanel() {
     const [saved, setSaved] = useState<SavedItem[]>([]);
     const [savingKey, setSavingKey] = useState<string | null>(null);
 
+    const [savedLoading, setSavedLoading] = useState(true);
+    const [savedError, setSavedError] = useState<string | null>(null);
+
+    const { status } = useSession();
+    const authed = status === "authenticated";
 
     const canSearch = useMemo(() => query.trim().length > 0 && !loading, [query, loading] );
 
@@ -80,15 +89,48 @@ export default function SearchPanel() {
     );
 
     useEffect(() => {
-      fetchSaved()
-        .then(setSaved)
-        .catch(() =>{
+      let cancelled = false;
 
-        });
-    }, []);
+      async function load() {
+        if (!authed) {
+          setSaved([]);
+          setSavedError(null);
+          setSavedLoading(false);
+          return;
+        }
+
+        try {
+          setSavedLoading(true);
+          setSavedError(null);
+          const items = await fetchSaved();
+          if (!cancelled) setSaved(items);
+        } catch (e) {
+          if (!cancelled) {
+            setSavedError(e instanceof Error ? e.message : "Failed to load saved places");
+          }
+        } finally {
+          if (!cancelled) setSavedLoading(false);
+        }
+      }
+
+      void load();
+      return () => {
+        cancelled = true;
+      };
+    }, [authed]);
+
 
     async function refreshSaved() {
-      setSaved(await fetchSaved());
+      try {
+        setSavedLoading(true);
+        setSavedError(null);
+        setSaved(await fetchSaved());
+      } catch (e){
+        setSavedError(e instanceof Error? e.message: "Failed to load saved places");
+      } finally {
+        setSavedLoading(false);
+      }
+      
     }
 
     async function onSearch() {
@@ -127,11 +169,17 @@ export default function SearchPanel() {
 
     return (
     <Card className="w-full">
+
       <CardHeader>
-        <CardTitle className="text-2xl">Local Explorer</CardTitle>
-        <CardDescription>
-          Search a city, discover attractions, and build an itinerary. (We’ll wire a real API next.)
-        </CardDescription>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-2xl">Local Explorer</CardTitle>
+            <CardDescription>
+              Search a city, discover attractions, and build an itinerary. (We’ll wire a real API next.)
+            </CardDescription>
+          </div>
+          <AuthButton />
+        </div>
       </CardHeader>
 
       <CardContent className="space-y-4">
@@ -144,7 +192,7 @@ export default function SearchPanel() {
               if (e.key === "Enter") void onSearch();
             }}
           />
-          <Button onClick={onSearch} disabled={!canSearch}>
+          <Button type="button" onClick={onSearch} disabled={!canSearch}>
             {loading ? "Searching..." : "Search"}
           </Button>
         </div>
@@ -153,9 +201,16 @@ export default function SearchPanel() {
 
         <Separator />
 
-        {saved.length > 0 ? (
-          <div className="space-y-2">
-            <p className="text-sm font-medium">Saved</p>
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Saved</p>
+
+          {savedLoading ? (
+            <p className="text-sm text-muted-foreground">Loading saved…</p>
+          ) : savedError ? (
+            <p className="text-sm text-red-600">{savedError}</p>
+          ) : saved.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No saved places yet.</p>
+          ) : (
             <ul className="space-y-2">
               {saved.map((s) => (
                 <li key={s.placeId} className="rounded-lg border p-3">
@@ -166,14 +221,21 @@ export default function SearchPanel() {
                         <p className="text-sm text-muted-foreground">{s.address}</p>
                       ) : null}
                     </div>
-                      
+
                     <div className="flex items-center gap-2">
                       {s.category ? <Badge variant="secondary">{s.category}</Badge> : null}
                       <Button
+                        type="button"
                         size="sm"
                         variant="outline"
-                        disabled={savingKey === `remove:${s.placeId}`}
+                        disabled={!authed || savingKey === `remove:${s.placeId}`}
+
                         onClick={async () => {
+                          if (!authed) {
+                            void signIn("github");
+                            return;
+                          }
+
                           try {
                             setSavingKey(`remove:${s.placeId}`);
                             await removePlace(s.placeId);
@@ -192,14 +254,16 @@ export default function SearchPanel() {
                 </li>
               ))}
             </ul>
-            <Separator />
-          </div>
-        ) : null}
+          )}
+
+          <Separator />
+        </div>
+
 
 
         {results.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            Results will show up here. Next step: connect a real Places API via a Next.js route handler.
+            search for a city to see its nearby attractions.
           </p>
         ) : (
           <div className="space-y-3">
@@ -220,10 +284,17 @@ export default function SearchPanel() {
                       {r.category ? <Badge variant="secondary">{r.category}</Badge> : null}
 
                       <Button
+                        type="button"
                         size="sm"
                         variant={savedKeys.has(`${r.provider}:${r.providerId}`) ? "secondary" : "default"}
                         disabled={savingKey === `${r.provider}:${r.providerId}`}
+
                         onClick={async () => {
+                          if (!authed){
+                            void signIn("github");
+                            return;
+                          }
+
                           const key = `${r.provider}:${r.providerId}`;
                           try {
                             setSavingKey(key);
