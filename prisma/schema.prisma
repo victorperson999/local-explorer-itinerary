@@ -119,3 +119,20 @@ model SavedPlace {
   @@unique([savedById, placeId])
   @@index([savedById])
 }
+
+model PlacesQueryCache {
+  id String @id @default(cuid())
+  key String @unique
+  q String
+  limit Int
+  radius Int
+  lat Float?
+  long Float?
+  results Json
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([expiresAt])
+
+}

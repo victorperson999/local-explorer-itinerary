@@ -1,6 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
 
 type Place = {
   provider: "osm";
@@ -51,12 +52,28 @@ function addressFromTags(tags?: Record<string, string>): string {
   return tags["addr:full"] ?? "";
 }
 
+function cacheKeyForPlaces(q: string, limit: number, radius: number) {
+  const nq = q.trim().toLowerCase();
+  return `places:v1:${nq}:limit=${limit}:radius=${radius}`;
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const q = (searchParams.get("q") ?? "").trim();
   const limit = Math.min(Number(searchParams.get("limit") ?? 15), 25);
 
   if (!q) return NextResponse.json([]);
+
+  const radius = 5000;
+  const key = cacheKeyForPlaces(q, limit, radius);
+
+  // cache lookup
+  const cached = await prisma.placesQueryCache.findUnique({ where: { key }})
+  if (cached && cached.expiresAt.getTime()>Date.now()) {
+    return NextResponse.json(cached.results as unknown as Place[], {
+      headers: {"x-cache": "HIT"},
+    });
+  }
 
   // 1) Geocode (Nominatim)
   const geoUrl =
@@ -78,7 +95,7 @@ export async function GET(req: Request) {
   const lon = Number(geo[0].lon);
 
   // 2) Nearby POIs (Overpass)
-  const radius = 5000;
+ 
   const overpassQuery = `
 [out:json][timeout:25];
 (
@@ -126,7 +143,7 @@ out center ${limit};
     const cLon = typeof el.lon === "number" ? el.lon : el.center?.lon;
     const category = categoryFromTags(tags);
 
-    // Build with OPTIONAL fields omitted when undefined (fixes your TS predicate errors)
+    // Build with OPTIONAL fields omitted when undefined
     const out: Place = {
       provider: "osm",
       providerId,
@@ -139,6 +156,34 @@ out center ${limit};
 
     return [out];
   });
+  
+  // handle cache write (miss)
+  const timeLimit = 1000*60*60*6;
+  const expiresAt = new Date(Date.now() + timeLimit);
 
-  return NextResponse.json(results);
+  await prisma.placesQueryCache.upsert({
+    where: { key },
+    update: { results, 
+              expiresAt, 
+              lat, 
+              long: lon, 
+              limit, 
+              radius, 
+              q: q.trim().toLocaleLowerCase() 
+            },
+    create: { key, 
+              q: q.trim().toLowerCase(), 
+              limit, 
+              radius, 
+              lat, 
+              long: lon, 
+              results, 
+              expiresAt
+            },
+  });
+
+  return NextResponse.json(results, {
+    headers: {"x-cache": "MISS"},
+  });
 }
+
