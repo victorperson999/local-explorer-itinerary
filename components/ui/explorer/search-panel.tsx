@@ -175,7 +175,7 @@ export default function SearchPanel() {
           <div>
             <CardTitle className="text-2xl">Local Explorer</CardTitle>
             <CardDescription>
-              Search a city, discover attractions, and build an itinerary. (We’ll wire a real API next.)
+              Search for a City to discover its attractions and build a travel/sightseeing Itinerary!
             </CardDescription>
           </div>
           <AuthButton />
