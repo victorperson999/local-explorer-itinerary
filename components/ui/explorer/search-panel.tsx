@@ -17,6 +17,8 @@ type SavedItem = {
   name: string;
   address: string | null;
   category: string | null;
+  lat: number | null;
+  lon: number | null;
 };
 
 async function fetchSaved(): Promise<SavedItem[]> {
@@ -38,6 +40,8 @@ async function savePlace(p: PlaceResult) {
       name: p.name,
       address: p.address,
       category: p.category,
+      lat: p.lat ?? null,
+      lon: p.lon ?? null,
 
     }),
   });
@@ -63,6 +67,8 @@ type PlaceResult = {
     name: string;
     address: string;
     category?: string;
+    lat?: number;
+    lon?: number;
 };
 
 

@@ -99,6 +99,8 @@ model Place {
   name       String
   address    String?
   category   String?
+  lat        Float?
+  lon       Float?
   createdAt  DateTime @default(now())
 
   saved          SavedPlace[]

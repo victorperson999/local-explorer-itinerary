@@ -33,6 +33,8 @@ export async function GET() {
       name: s.place.name,
       address: s.place.address,
       category: s.place.category,
+      lat: s.place.lat,
+      lon: s.place.lon,
       createdAt: s.createdAt,
     }))
   );
@@ -44,7 +46,7 @@ export async function POST(req: Request) {
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json();
-  const { provider, providerId, name, address, category } = body ?? {};
+  const { provider, providerId, name, address, category, lat, lon } = body ?? {};
 
   if (!provider || !providerId || !name) {
     return NextResponse.json(
@@ -53,15 +55,26 @@ export async function POST(req: Request) {
     );
   }
 
+  const latNum = typeof lat === "number" ? lat : (typeof lat === "string" ? Number(lat) : null);
+  const lonNum = typeof lon === "number" ? lon : (typeof lon === "string" ? Number(lon) : null);
+
   const place = await prisma.place.upsert({
     where: { provider_providerId: { provider, providerId } },
-    update: { name, address: address ?? null, category: category ?? null },
+    update: { 
+      name, 
+      address: address ?? null, 
+      category: category ?? null, 
+      lat: Number.isFinite(latNum as number) ? (latNum as number) : null,
+      lon: Number.isFinite(lonNum as number) ? (lonNum as number) : null,
+    },
     create: {
       provider,
       providerId,
       name,
       address: address ?? null,
       category: category ?? null,
+      lat: Number.isFinite(latNum as number) ? (latNum as number) : null,
+      lon: Number.isFinite(lonNum as number) ? (lonNum as number) : null,
     },
   });
 
