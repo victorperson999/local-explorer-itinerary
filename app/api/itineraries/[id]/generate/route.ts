@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import next from "next";
 
 async function requireUserId() {
     const session = await getServerSession(authOptions);
@@ -100,7 +101,7 @@ function orderWithinDay(day: P[]): P[]{
     return [...ordered, ...rest];
 }
 
-export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(_: Request, ctx: { params: Promise<{ id: string }> }) {
     const userId = await requireUserId();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -115,45 +116,56 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         orderBy: { createdAt: "desc" },
     });
 
-    const places: P[] = saved.map((s) => ({
-        id: s.placeId,
-        lat: s.place.lat ?? null,
-        long: (s.place as any).long ?? null,
-        category: s.place.category ?? null,
-        name: s.place.name,
-    }));
+    const eligible = saved.map(
+        (s) => s.place)
+        .filter((p) => typeof p.lat == "number" && typeof p.lon == "number");
+       
+    
+    if (eligible.length == 0){
+        return NextResponse.json({
+            ok: true,
+            count: 0,
+            items: [],
+            debug: { savedCount: saved.length, eligibleCount: 0, reason: "No saved places with lat/lon"}
+        });
+    }
 
-    // Simple cap so you don’t dump 200 items into 3 days
-    const maxPerDay = 6;
-    const cap = itinerary.daysCount * maxPerDay;
-    const picked = places.slice(0, cap);
+    // cap so we don’t dump 200 items into 3 days
+    const PerDay = 3;
+    const maxToCreate = Math.min(eligible.length, itinerary.daysCount * PerDay);
+    const chosen = eligible.slice(0, maxToCreate);
 
-    const buckets = assignDays(picked, itinerary.daysCount).map(orderWithinDay);
-
-    await prisma.$transaction(async (tx) => {
+    const created = await prisma.$transaction(async (tx) => {
+        await tx.itineraryItem.deleteMany({ where: { itineraryId: id}});
         // replace
-        await tx.itineraryItem.deleteMany({ where: { itineraryId: id } });
+        const out = [];
+        const nextOrderByDay = Array.from({ length: itinerary.daysCount }, () => 0);
+         
+        for (let i = 0; i<chosen.length; i++){
+            const dayIndex = i % itinerary.daysCount;
+            const order = nextOrderByDay[dayIndex]++;
 
-        for (let dayIndex = 0; dayIndex < buckets.length; dayIndex++) {
-        const day = buckets[dayIndex];
-        for (let order = 0; order < day.length; order++) {
-            await tx.itineraryItem.create({
-            data: {
+            const item = await tx.itineraryItem.create({
+                data: {
                 itineraryId: id,
-                placeId: day[order].id,
+                placeId: chosen[i].id,
                 dayIndex,
                 order,
+                note: null,
             },
+            include: { place: true},
             });
+            out.push(item)
         }
-        }
+        return out;
     });
 
-    const items = await prisma.itineraryItem.findMany({
-        where: { itineraryId: id },
-        include: { place: true },
-        orderBy: [{ dayIndex: "asc" }, { order: "asc" }],
+    return NextResponse.json({
+        ok: true,
+        count: created.length,
+        items: created,
+        debug: { savedCount: saved.length, 
+            eligibleCount: eligible.length, 
+            chosenCount: chosen.length},
     });
-
-    return NextResponse.json({ ok: true, count: items.length, items });
 }

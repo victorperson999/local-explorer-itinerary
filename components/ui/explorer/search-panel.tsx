@@ -21,6 +21,33 @@ type SavedItem = {
   lon: number | null;
 };
 
+type Itinerary = {
+  id: string;
+  title: string;
+  daysCount: number;
+  startDate: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ItineraryItem = {
+  id: string;
+  itineraryId: string;
+  placeId: string;
+  dayIndex: number;
+  order: number;
+  note: string | null;
+  createdAt: string;
+  place: {
+    id: string;
+    name: string;
+    address: string | null;
+    category: string | null;
+    lat: number | null;
+    lon: number | null;
+  };
+};
+
 async function fetchSaved(): Promise<SavedItem[]> {
   const res = await fetch("/api/saved", { cache: "no-store" });
   if (res.status === 401) return []; // not signed in yet
@@ -84,6 +111,23 @@ export default function SearchPanel() {
     const [savedLoading, setSavedLoading] = useState(true);
     const [savedError, setSavedError] = useState<string | null>(null);
 
+    const [itineraries, setItineraries] = useState<Itinerary[]>([]);
+    const [itineraryId, setItineraryId] = useState<string | null>(null);
+
+    const [itineraryItems, setItineraryItems] = useState<ItineraryItem[]>([]);
+    const [itinLoading, setItinLoading] = useState(false);
+    const [itinError, setItinError] = useState<string | null>(null);
+
+    const [itemsLoading, setItemsLoading] = useState(false);
+    const [itemsError, setItemsError] = useState<string | null>(null);
+
+    const [creatingItin, setCreatingItin] = useState(false);
+    const [generating, setGenerating] = useState(false);
+
+    const [newItinTitle, setNewItinTitle] = useState("My Trip");
+    const [newDaysCount, setNewDaysCount] = useState(3);
+
+
     const { status } = useSession();
     const authed = status === "authenticated";
 
@@ -94,36 +138,99 @@ export default function SearchPanel() {
       [saved]
     );
 
+    const selectedItinerary = useMemo(
+    () => itineraries.find((i) => i.id === itineraryId) ?? null,
+    [itineraries, itineraryId]
+    );
+
+    const itemsByDay = useMemo(() => {
+      const map = new Map<number, ItineraryItem[]>();
+      for (const item of itineraryItems) {
+        const arr = map.get(item.dayIndex) ?? [];
+        arr.push(item);
+        map.set(item.dayIndex, arr);
+      }
+      for (const [day, arr] of map.entries()) {
+        arr.sort((a, b) => a.order - b.order);
+        map.set(day, arr);
+      }
+      return map;
+    }, [itineraryItems]);
+
+
     useEffect(() => {
       let cancelled = false;
 
-      async function load() {
+      async function loadItins() {
         if (!authed) {
-          setSaved([]);
-          setSavedError(null);
-          setSavedLoading(false);
+          setItineraries([]);
+          setItineraryId(null);
+          setItineraryItems([]);
+          setItinError(null);
+          setItemsError(null);
+          setItinLoading(false);
+          setItemsLoading(false);
           return;
         }
 
         try {
-          setSavedLoading(true);
-          setSavedError(null);
-          const items = await fetchSaved();
-          if (!cancelled) setSaved(items);
+          setItinLoading(true);
+          setItinError(null);
+          const list = await fetchItineraries();
+          if (cancelled) return;
+
+          setItineraries(list);
+
+          // pick first itinerary if none selected
+          if (!itineraryId && list.length > 0) {
+            setItineraryId(list[0].id);
+          }
         } catch (e) {
           if (!cancelled) {
-            setSavedError(e instanceof Error ? e.message : "Failed to load saved places");
+            setItinError(e instanceof Error ? e.message : "Failed to load itineraries");
           }
         } finally {
-          if (!cancelled) setSavedLoading(false);
+          if (!cancelled) setItinLoading(false);
         }
       }
 
-      void load();
+      void loadItins();
       return () => {
         cancelled = true;
       };
-    }, [authed]);
+      // IMPORTANT: include itineraryId so we don't overwrite user selection incorrectly
+    }, [authed, itineraryId]);
+
+    useEffect(() => {
+      let cancelled = false;
+
+      async function loadItems() {
+        if (!authed || !itineraryId) {
+          setItineraryItems([]);
+          setItemsError(null);
+          setItemsLoading(false);
+          return;
+        }
+
+        try {
+          setItemsLoading(true);
+          setItemsError(null);
+          const items = await fetchItineraryItems(itineraryId);
+          if (!cancelled) setItineraryItems(items);
+        } catch (e) {
+          if (!cancelled) {
+            setItemsError(e instanceof Error ? e.message : "Failed to load itinerary items");
+          }
+        } finally {
+          if (!cancelled) setItemsLoading(false);
+        }
+      }
+
+      void loadItems();
+      return () => {
+        cancelled = true;
+      };
+    }, [authed, itineraryId]);
 
 
     async function refreshSaved() {
@@ -171,6 +278,69 @@ export default function SearchPanel() {
           setLoading(false);
         }
 
+    }
+
+    async function fetchItineraries(): Promise<Itinerary[]> {
+    const res = await fetch("/api/itineraries", { cache: "no-store" });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Failed to load itineraries: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
+    }
+    return (await res.json()) as Itinerary[];
+    }
+
+    async function createItinerary(title: string, daysCount: number): Promise<Itinerary> {
+      const res = await fetch("/api/itineraries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ title, daysCount }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Failed to create itinerary: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
+      }
+      return (await res.json()) as Itinerary;
+    }
+
+    async function fetchItineraryItems(id: string): Promise<ItineraryItem[]> {
+    const res = await fetch(`/api/itineraries/${encodeURIComponent(id)}/items`, { cache: "no-store" });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Failed to load itinerary items: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
+    }
+    return (await res.json()) as ItineraryItem[];
+    }
+
+    async function generateItinerary(id: string) {
+      const res = await fetch(`/api/itineraries/${encodeURIComponent(id)}/generate`, {
+        method: "POST",
+        cache: "no-store",
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Failed to generate itinerary: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
+      }
+
+      return res.json();
+    }
+
+    async function removeItineraryItem(itinId: string, itemId: string) {
+      const res = await fetch(`/api/itineraries/${encodeURIComponent(itinId)}/items`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ itemId }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Failed to remove item: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
+      }
+
+      return res.json();
     }
 
     return (
@@ -264,6 +434,160 @@ export default function SearchPanel() {
 
           <Separator />
         </div>
+        
+        
+
+        {/* === Itinerary section (inserted here) === */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">Itinerary</p>
+            {itinLoading ? <p className="text-xs text-muted-foreground">Loading…</p> : null}
+          </div>
+
+          {!authed ? (
+            <p className="text-sm text-muted-foreground">Sign in to create and generate itineraries.</p>
+          ) : itinError ? (
+            <p className="text-sm text-red-600">{itinError}</p>
+          ) : (
+            <div className="space-y-3">
+              {/* Create */}
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Input
+                  value={newItinTitle}
+                  onChange={(e) => setNewItinTitle(e.target.value)}
+                  placeholder="Trip title"
+                />
+                <Input
+                  type="number"
+                  min={1}
+                  max={14}
+                  value={newDaysCount}
+                  onChange={(e) => setNewDaysCount(Number(e.target.value))}
+                  className="sm:w-28"
+                />
+                <Button
+                  type="button"
+                  disabled={creatingItin || !newItinTitle.trim()}
+                  onClick={async () => {
+                    if (!authed) {
+                      void signIn("github");
+                      return;
+                    }
+
+                    try {
+                      setCreatingItin(true);
+                      setItinError(null);
+
+                      const created = await createItinerary(newItinTitle.trim(), newDaysCount || 3);
+
+                      const list = await fetchItineraries();
+                      setItineraries(list);
+                      setItineraryId(created.id);
+                    } catch (e) {
+                      setItinError(e instanceof Error ? e.message : "Failed to create itinerary");
+                    } finally {
+                      setCreatingItin(false);
+                    }
+                  }}
+                >
+                  {creatingItin ? "Creating..." : "New itinerary"}
+                </Button>
+              </div>
+
+              {/* Pick + Generate */}
+              {itineraries.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No itineraries yet.</p>
+              ) : (
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <select
+                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                    value={itineraryId ?? ""}
+                    onChange={(e) => setItineraryId(e.target.value)}
+                  >
+                    {itineraries.map((it) => (
+                      <option key={it.id} value={it.id}>
+                        {it.title} ({it.daysCount} days)
+                      </option>
+                    ))}
+                  </select>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={!itineraryId || generating}
+                    onClick={async () => {
+                      if (!authed) {
+                        void signIn("github");
+                        return;
+                      }
+                      if (!itineraryId) return;
+
+                      try {
+                        setGenerating(true);
+                        setItemsError(null);
+
+                        await generateItinerary(itineraryId);
+
+                        const items = await fetchItineraryItems(itineraryId);
+                        setItineraryItems(items);
+                      } catch (e) {
+                        setItemsError(e instanceof Error ? e.message : "Failed to generate itinerary");
+                      } finally {
+                        setGenerating(false);
+                      }
+                    }}
+                  >
+                    {generating ? "Generating..." : "Generate (replace)"}
+                  </Button>
+                </div>
+              )}
+
+              {/* Items */}
+              {itemsLoading ? (
+                <p className="text-sm text-muted-foreground">Loading itinerary items…</p>
+              ) : itemsError ? (
+                <p className="text-sm text-red-600">{itemsError}</p>
+              ) : !selectedItinerary ? (
+                <p className="text-sm text-muted-foreground">Select an itinerary to see items.</p>
+              ) : itineraryItems.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No items yet. Click <span className="font-medium">Generate (replace)</span>.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {Array.from({ length: selectedItinerary.daysCount }, (_, day) => {
+                    const dayItems = itemsByDay.get(day) ?? [];
+                    return (
+                      <div key={day} className="rounded-lg border p-3">
+                        <p className="text-sm font-medium">Day {day + 1}</p>
+
+                        {dayItems.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No items.</p>
+                        ) : (
+                          <ul className="mt-2 space-y-2">
+                            {dayItems.map((it) => (
+                              <li key={it.id} className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="font-medium">{it.place.name}</p>
+                                  {it.place.address ? (
+                                    <p className="text-sm text-muted-foreground">{it.place.address}</p>
+                                  ) : null}
+                                </div>
+                                {it.place.category ? <Badge variant="secondary">{it.place.category}</Badge> : null}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <Separator />
 
 
 
