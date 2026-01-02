@@ -111,6 +111,10 @@ export default function SearchPanel() {
     const [savedLoading, setSavedLoading] = useState(true);
     const [savedError, setSavedError] = useState<string | null>(null);
 
+    const [selectedSavedIds, setSelectedSavedIds] = useState<Set<string>>(new Set());
+    const [genPerDay, setGenPerDay] = useState(3);
+    const [genShuffle, setGenShuffle] = useState(false);
+
     const [itineraries, setItineraries] = useState<Itinerary[]>([]);
     const [itineraryId, setItineraryId] = useState<string | null>(null);
 
@@ -132,6 +136,13 @@ export default function SearchPanel() {
     const authed = status === "authenticated";
 
     const canSearch = useMemo(() => query.trim().length > 0 && !loading, [query, loading] );
+
+    const selectedSavedCount = selectedSavedIds.size;
+
+    const selectedSavedIdArray = useMemo(
+      () => Array.from(selectedSavedIds),
+      [selectedSavedIds]
+    );
 
     const savedKeys = useMemo(
       () => new Set(saved.map((s) => `${s.provider}:${s.providerId}`)),
@@ -157,6 +168,15 @@ export default function SearchPanel() {
       return map;
     }, [itineraryItems]);
 
+    useEffect(() => {
+      // if saved list changes (remove/refresh), drop ids that no longer exist
+      setSelectedSavedIds((prev) => {
+        const allowed = new Set(saved.map((s) => s.placeId));
+        const next = new Set<string>();
+        for (const id of prev) if (allowed.has(id)) next.add(id);
+        return next;
+      });
+    }, [saved]);
 
     useEffect(() => {
       let cancelled = false;
@@ -232,6 +252,22 @@ export default function SearchPanel() {
       };
     }, [authed, itineraryId]);
 
+    function toggleSavedSelection(placeId: string) {
+      setSelectedSavedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(placeId)) next.delete(placeId);
+        else next.add(placeId);
+        return next;
+      });
+    }
+
+    function selectAllSaved() {
+      setSelectedSavedIds(new Set(saved.map((s) => s.placeId)));
+    }
+
+    function clearSelectedSaved() {
+      setSelectedSavedIds(new Set());
+    }
 
     async function refreshSaved() {
       try {
@@ -313,10 +349,12 @@ export default function SearchPanel() {
     return (await res.json()) as ItineraryItem[];
     }
 
-    async function generateItinerary(id: string) {
+    async function generateItinerary(id: string, body?: unknown) {
       const res = await fetch(`/api/itineraries/${encodeURIComponent(id)}/generate`, {
         method: "POST",
         cache: "no-store",
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
       });
 
       if (!res.ok) {
@@ -378,7 +416,37 @@ export default function SearchPanel() {
         <Separator />
 
         <div className="space-y-2">
-          <p className="text-sm font-medium">Saved</p>
+          
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-medium">
+            Saved{" "}
+            <span className="text-xs text-muted-foreground">
+              ({selectedSavedCount} selected)
+            </span>
+          </p>
+
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!authed || saved.length === 0}
+              onClick={selectAllSaved}
+            >
+              Select all
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!authed || selectedSavedCount === 0}
+              onClick={clearSelectedSaved}
+            >
+              Clear
+            </Button>
+          </div>
+        </div>
+  
 
           {savedLoading ? (
             <p className="text-sm text-muted-foreground">Loading saved…</p>
@@ -397,35 +465,64 @@ export default function SearchPanel() {
                         <p className="text-sm text-muted-foreground">{s.address}</p>
                       ) : null}
                     </div>
+                    
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          className="mt-1 h-4 w-4"
+                          checked={selectedSavedIds.has(s.placeId)}
+                          onChange={() => toggleSavedSelection(s.placeId)}
+                          disabled={!authed}
+                          aria-label={`Select ${s.name}`}
+                        />
 
-                    <div className="flex items-center gap-2">
-                      {s.category ? <Badge variant="secondary">{s.category}</Badge> : null}
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={!authed || savingKey === `remove:${s.placeId}`}
+                        <div>
+                          <p className="font-medium">{s.name}</p>
+                          {s.address ? (
+                            <p className="text-sm text-muted-foreground">{s.address}</p>
+                          ) : null}
+                        </div>
+                      </div>
 
-                        onClick={async () => {
-                          if (!authed) {
-                            void signIn("github");
-                            return;
-                          }
+                      <div className="flex items-center gap-2">
+                        {s.category ? <Badge variant="secondary">{s.category}</Badge> : null}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={!authed || savingKey === `remove:${s.placeId}`}
+                          onClick={async () => {
+                            if (!authed) {
+                              void signIn("github");
+                              return;
+                            }
 
-                          try {
-                            setSavingKey(`remove:${s.placeId}`);
-                            await removePlace(s.placeId);
-                            await refreshSaved();
-                          } catch (e) {
-                            setError(e instanceof Error ? e.message : "Failed to remove place");
-                          } finally {
-                            setSavingKey(null);
-                          }
-                        }}
-                      >
-                        Remove
-                      </Button>
+                            try {
+                              setSavingKey(`remove:${s.placeId}`);
+                              await removePlace(s.placeId);
+
+                              // also drop it from selection immediately
+                              setSelectedSavedIds((prev) => {
+                                const next = new Set(prev);
+                                next.delete(s.placeId);
+                                return next;
+                              });
+
+                              await refreshSaved();
+                            } catch (e) {
+                              setError(e instanceof Error ? e.message : "Failed to remove place");
+                            } finally {
+                              setSavingKey(null);
+                            }
+                          }}
+                        >
+                          Remove
+                        </Button>
+                      </div>
                     </div>
+
+                    
                   </div>
                 </li>
               ))}
@@ -499,46 +596,110 @@ export default function SearchPanel() {
                 <p className="text-sm text-muted-foreground">No itineraries yet.</p>
               ) : (
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <select
-                    className="h-10 rounded-md border bg-background px-3 text-sm"
-                    value={itineraryId ?? ""}
-                    onChange={(e) => setItineraryId(e.target.value)}
-                  >
-                    {itineraries.map((it) => (
-                      <option key={it.id} value={it.id}>
-                        {it.title} ({it.daysCount} days)
-                      </option>
-                    ))}
-                  </select>
+                  
 
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={!itineraryId || generating}
-                    onClick={async () => {
-                      if (!authed) {
-                        void signIn("github");
-                        return;
-                      }
-                      if (!itineraryId) return;
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <select
+                      className="h-10 rounded-md border bg-background px-3 text-sm"
+                      value={itineraryId ?? ""}
+                      onChange={(e) => setItineraryId(e.target.value)}
+                    >
+                      {itineraries.map((it) => (
+                        <option key={it.id} value={it.id}>
+                          {it.title} ({it.daysCount} days)
+                        </option>
+                      ))}
+                    </select>
 
-                      try {
-                        setGenerating(true);
-                        setItemsError(null);
+                    {/* knobs */}
+                    <Input
+                      type="number"
+                      min={1}
+                      max={8}
+                      value={genPerDay}
+                      onChange={(e) => setGenPerDay(Number(e.target.value))}
+                      className="sm:w-24"
+                      title="Places per day"
+                    />
 
-                        await generateItinerary(itineraryId);
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={genShuffle}
+                        onChange={(e) => setGenShuffle(e.target.checked)}
+                      />
+                      Shuffle
+                    </label>
 
-                        const items = await fetchItineraryItems(itineraryId);
-                        setItineraryItems(items);
-                      } catch (e) {
-                        setItemsError(e instanceof Error ? e.message : "Failed to generate itinerary");
-                      } finally {
-                        setGenerating(false);
-                      }
-                    }}
-                  >
-                    {generating ? "Generating..." : "Generate (replace)"}
-                  </Button>
+                    {/* generate using ALL saved */}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!itineraryId || generating}
+                      onClick={async () => {
+                        if (!authed) {
+                          void signIn("github");
+                          return;
+                        }
+                        if (!itineraryId) return;
+
+                        try {
+                          setGenerating(true);
+                          setItemsError(null);
+
+                          await generateItinerary(itineraryId, {
+                            mode: "replace",
+                            perDay: genPerDay,
+                            shuffle: genShuffle,
+                          });
+
+                          const items = await fetchItineraryItems(itineraryId);
+                          setItineraryItems(items);
+                        } catch (e) {
+                          setItemsError(e instanceof Error ? e.message : "Failed to generate itinerary");
+                        } finally {
+                          setGenerating(false);
+                        }
+                      }}
+                    >
+                      {generating ? "Generating..." : "Generate (all saved)"}
+                    </Button>
+
+                    {/* generate using SELECTED saved */}
+                    <Button
+                      type="button"
+                      disabled={!itineraryId || generating || selectedSavedCount === 0}
+                      onClick={async () => {
+                        if (!authed) {
+                          void signIn("github");
+                          return;
+                        }
+                        if (!itineraryId) return;
+
+                        try {
+                          setGenerating(true);
+                          setItemsError(null);
+
+                          await generateItinerary(itineraryId, {
+                            mode: "replace",
+                            perDay: genPerDay,
+                            shuffle: genShuffle,
+                            placeIds: selectedSavedIdArray,
+                          });
+
+                          const items = await fetchItineraryItems(itineraryId);
+                          setItineraryItems(items);
+                        } catch (e) {
+                          setItemsError(e instanceof Error ? e.message : "Failed to generate itinerary");
+                        } finally {
+                          setGenerating(false);
+                        }
+                      }}
+                    >
+                      Generate (selected)
+                    </Button>
+                  </div>
+
                 </div>
               )}
 

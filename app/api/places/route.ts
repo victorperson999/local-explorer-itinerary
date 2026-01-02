@@ -3,6 +3,65 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
+const OVERPASS_ENDPOINTS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.openstreetmap.ru/api/interpreter",
+  "https://overpass.nchc.org.tw/api/interpreter",
+];
+
+async function postOverpass(query: string, timeoutMs = 20000) {
+  let lastErr: any = null;
+
+  for (const url of OVERPASS_ENDPOINTS) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "User-Agent": "local-explorer-itinerary-planner (dev)",
+          "Accept": "application/json",
+        },
+        body: query,
+        cache: "no-store",
+        signal: ctrl.signal,
+      });
+
+      clearTimeout(t);
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        lastErr = {
+          url,
+          status: res.status,
+          statusText: res.statusText,
+          details: text.slice(0, 300),
+        };
+        continue; // try next endpoint
+      }
+
+      // Sometimes Overpass returns HTML even with 200; guard it
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) {
+        const text = await res.text().catch(() => "");
+        lastErr = { url, status: res.status, statusText: "Non-JSON response", details: text.slice(0, 300) };
+        continue;
+      }
+
+      return await res.json();
+    } catch (e: any) {
+      clearTimeout(t);
+      lastErr = { url, error: e?.name === "AbortError" ? "Timeout" : String(e) };
+      continue;
+    }
+  }
+
+  throw lastErr ?? new Error("All Overpass endpoints failed");
+}
+
 type Place = {
   provider: "osm";
   providerId: string;
@@ -68,12 +127,18 @@ export async function GET(req: Request) {
   const key = cacheKeyForPlaces(q, limit, radius);
 
   // cache lookup
-  const cached = await prisma.placesQueryCache.findUnique({ where: { key }})
-  if (cached && cached.expiresAt.getTime()>Date.now()) {
-    return NextResponse.json(cached.results as unknown as Place[], {
-      headers: {"x-cache": "HIT"},
-    });
+  const cached = await prisma.placesQueryCache.findUnique({ where: { key } });
+
+  if (cached && cached.expiresAt.getTime() > Date.now()) {
+    if (!Array.isArray(cached.results)) {
+      await prisma.placesQueryCache.delete({ where: { key } });
+    } else {
+      return NextResponse.json(cached.results as unknown as Place[], {
+        headers: { "x-cache": "HIT" },
+      });
+    }
   }
+
 
   // 1) Geocode (Nominatim)
   const geoUrl =
@@ -94,43 +159,45 @@ export async function GET(req: Request) {
   const lat = Number(geo[0].lat);
   const lon = Number(geo[0].lon);
 
-  // 2) Nearby POIs (Overpass)
- 
-  const overpassQuery = `
-[out:json][timeout:25];
-(
-  node["name"]["tourism"~"attraction|museum|gallery"](around:${radius},${lat},${lon});
-  way["name"]["tourism"~"attraction|museum|gallery"](around:${radius},${lat},${lon});
-  relation["name"]["tourism"~"attraction|museum|gallery"](around:${radius},${lat},${lon});
-  node["name"]["leisure"="park"](around:${radius},${lat},${lon});
-);
-out center ${limit};
-`;
+  // 2) Nearby POIs (Overpass) with fallback + radius shrink
+  const radii = [radius, 2500, 1500];
 
-  const overRes = await fetch("https://overpass-api.de/api/interpreter", {
-    method: "POST",
-    headers: {
-      "Content-Type": "text/plain",
-      "User-Agent": "local-explorer-itinerary-planner (dev)",
-    },
-    body: overpassQuery,
-    cache: "no-store",
-  });
+  let data: OverpassResponse | null = null;
+  let lastErr: any = null;
 
-   if (!overRes.ok) {
-    const text = await overRes.text().catch(() => "");
-    return NextResponse.json(
-      {
-        error: "Places query failed",
-        overpassStatus: overRes.status,
-        overpassStatusText: overRes.statusText,
-        details: text.slice(0, 400),
-      },
-      { status: 502 }
-    );
-  }
+  let usedRadius = radius;
 
-  const data = (await overRes.json()) as OverpassResponse;
+  for (const r of radii) {
+    const overpassQuery = `
+      [out:json][timeout:25];
+      (
+        node["name"]["tourism"~"attraction|museum|gallery"](around:${r},${lat},${lon});
+        way["name"]["tourism"~"attraction|museum|gallery"](around:${r},${lat},${lon});
+        relation["name"]["tourism"~"attraction|museum|gallery"](around:${r},${lat},${lon});
+        node["name"]["leisure"="park"](around:${r},${lat},${lon});
+      );
+      out center ${limit};
+      `;
+
+      try {
+        data = (await postOverpass(overpassQuery, 20000)) as OverpassResponse;
+        usedRadius = r;
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        continue;
+      }
+    }
+
+    if (!data) {
+      return NextResponse.json(
+        { error: "Places query failed", details: lastErr },
+        { status: 502 }
+      );
+    }
+
+
   const elements = data.elements ?? [];
 
   const results: Place[] = elements.flatMap((el) => {
@@ -168,16 +235,16 @@ out center ${limit};
               lat, 
               long: lon, 
               limit, 
-              radius, 
+              radius: usedRadius,
               q: q.trim().toLocaleLowerCase() 
             },
     create: { key, 
               q: q.trim().toLowerCase(), 
               limit, 
-              radius, 
+              radius: usedRadius,
               lat, 
               long: lon, 
-              results, 
+              results,
               expiresAt
             },
   });

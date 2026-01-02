@@ -108,7 +108,7 @@ function orderWithinDay(day: P[]): P[]{
     return [...ordered, ...rest];
 }
 
-export async function POST(_: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
     const userId = await requireUserId();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -117,13 +117,42 @@ export async function POST(_: Request, ctx: { params: Promise<{ id: string }> })
     const itinerary = await prisma.itinerary.findFirst({ where: { id, userId } });
     if (!itinerary) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+    let body: GenerateBody = {};
+
+    try{
+        body = (await req.json()) as GenerateBody;
+    } catch {
+        body = {};
+    }
+
+    const mode = body.mode ?? "replace";
+    const perDay = Math.max(1, Math.min(Number(body.perDay ?? 3), 8));
+    const shuffle = Boolean(body.shuffle);
+
+    const placeIds = Array.isArray(body.placeIds) 
+        ? body.placeIds
+            .filter((x): x is string => typeof x == 'string')
+            .map((x) => x.trim())
+            .filter((x) => x.length > 0)
+        : null;
+
     const saved = await prisma.savedPlace.findMany({
-        where: { savedById: userId },
+        where: { 
+            savedById: userId,
+            ...(placeIds ? { placeId: { in: placeIds }}: {}),
+        },
         include: { place: true },
         orderBy: { createdAt: "desc" },
     });
+    // if user chose specific places, but none matched their saved list, then:
+    if (placeIds && saved.length == 0){
+        return NextResponse.json(
+            { error: "No selected places found in your saved list."},
+            { status: 400}
+        );
+    }
 
-    const eligible = saved.map(
+    let eligible = saved.map(
         (s) => s.place)
         .filter((p) => typeof p.lat == "number" && typeof p.lon == "number");
        
@@ -133,21 +162,42 @@ export async function POST(_: Request, ctx: { params: Promise<{ id: string }> })
             ok: true,
             count: 0,
             items: [],
-            debug: { savedCount: saved.length, eligibleCount: 0, reason: "No saved places with lat/lon"}
+            debug: { savedCount: saved.length, eligibleCount: 0, reason: "No saved places with lat/lon"},
         });
     }
 
-    // cap so we don’t dump 200 items into 3 days
-    const PerDay = 3;
-    const maxToCreate = Math.min(eligible.length, itinerary.daysCount * PerDay);
+    if (shuffle){
+        eligible = eligible
+            .map((p) => ({p, r: Math.random()}))
+            .sort((a,b) => a.r - b.r)
+            .map((x) => x.p);
+    }
+
+    const maxToCreate = Math.min(eligible.length, itinerary.daysCount * perDay);
     const chosen = eligible.slice(0, maxToCreate);
 
     const created = await prisma.$transaction(async (tx) => {
-        await tx.itineraryItem.deleteMany({ where: { itineraryId: id}});
+        if (mode == "replace"){
+            await tx.itineraryItem.deleteMany({ where: { itineraryId: id}});
+        }
         // replace
-        const out = [];
         const nextOrderByDay = Array.from({ length: itinerary.daysCount }, () => 0);
-         
+
+        if (mode == "append"){
+            const existing = await tx.itineraryItem.findMany({
+                where: { itineraryId: id},
+                select: { dayIndex: true, order: true},
+            });
+
+            for (const it of existing){
+                const d = it.dayIndex;
+                if (d >= 0 && d < nextOrderByDay.length){
+                    nextOrderByDay[d] = Math.max(nextOrderByDay[d], it.order + 1);
+                }
+            }
+        }
+
+        const out = []
         for (let i = 0; i<chosen.length; i++){
             const dayIndex = i % itinerary.daysCount;
             const order = nextOrderByDay[dayIndex]++;
@@ -171,8 +221,14 @@ export async function POST(_: Request, ctx: { params: Promise<{ id: string }> })
         ok: true,
         count: created.length,
         items: created,
-        debug: { savedCount: saved.length, 
+        debug: { 
+            savedCount: saved.length, 
             eligibleCount: eligible.length, 
-            chosenCount: chosen.length},
+            chosenCount: chosen.length,
+            selectedCount: placeIds?.length ?? null,
+            mode,
+            perDay,
+            shuffle,
+        },
     });
 }
