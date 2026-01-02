@@ -20,6 +20,13 @@ type P = {
     name: string
 };
 
+type GenerateBody = {
+    placeIds?: string[];
+    mode?: "replace" | "append";
+    perDay?: number;
+    shuffle?: boolean;
+}
+
 function dist2(a: { lat: number; long: number}, b: { lat: number; long: number}){
     const dx = a.lat - b.lat;
     const dy = a.long = b.long;
