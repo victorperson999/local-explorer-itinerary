@@ -357,6 +357,17 @@ export default function SearchPanel() {
         body: JSON.stringify({ title, daysCount }),
       });
 
+      // Handle duplicate name from backend
+      if (res.status === 409) {
+        const data = await res.json().catch(() => null);
+        const msg =
+          typeof data?.error === "string"
+            ? data.error
+            : "Itinerary with this name already exists";
+
+        throw Object.assign(new Error(msg), { status: 409, code: "DUPLICATE_ITINERARY" });
+      }
+
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`Failed to create itinerary: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
@@ -611,7 +622,9 @@ export default function SearchPanel() {
                   value={newItinTitle}
                   onChange={(e) => {
                     setNewItinTitle(e.target.value);
-                    setNewItinTitleError(null);
+                    if (newItinTitle) {
+                      setNewItinTitleError(null);
+                    }
                   }}
                   placeholder="Trip title"
                   className={newItinTitleError ? "border-red-500 focus-visible:ring-red-500" : ""}
@@ -619,14 +632,20 @@ export default function SearchPanel() {
                 {newItinTitleError ? (
                   <p className="text-sm text-red-600">{newItinTitleError}</p>
                 ) : null}
-                <Input
-                  type="number"
-                  min={1}
-                  max={14}
-                  value={newDaysCount}
-                  onChange={(e) => setNewDaysCount(Number(e.target.value))}
-                  className="sm:w-28"
-                />
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground whitespace-nowrap"># Days</span>
+                  <Input
+                    id="new-itinerary-days"
+                    type="number"
+                    min={1}
+                    max={14}
+                    value={newDaysCount}
+                    onChange={(e) => setNewDaysCount(Number(e.target.value))}
+                    className="sm:w-28"
+                    aria-label="Number of days"
+                  />
+                </div>
+
                 <Button
                   type="button"
                   disabled={creatingItin || !newItinTitle.trim()}
@@ -642,7 +661,7 @@ export default function SearchPanel() {
                       setTimeout(() => setNewItinTitleError(null), 2500);
                       return;
                     }
-                    
+
                     try {
                       setCreatingItin(true);
                       setItinError(null);
@@ -652,7 +671,15 @@ export default function SearchPanel() {
                       const list = await fetchItineraries();
                       setItineraries(list);
                       setItineraryId(created.id);
-                    } catch (e) {
+                    } catch (e: any) {
+                      // backend duplicate safeguard (409)
+                      if (e?.code === "DUPLICATE_ITINERARY" || e?.status === 409) {
+                        setNewItinTitleError(
+                          e?.message || "Itinerary with this name already exists, enter a different name"
+                        );
+                        setTimeout(() => setNewItinTitleError(null), 2500);
+                        return;
+                      }
                       setItinError(e instanceof Error ? e.message : "Failed to create itinerary");
                     } finally {
                       setCreatingItin(false);
