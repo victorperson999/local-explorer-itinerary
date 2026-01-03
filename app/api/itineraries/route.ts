@@ -32,9 +32,20 @@ export async function POST(req: Request) {
   const daysCount = Math.max(1, Math.min(Number(body?.daysCount ?? 3), 30));
   const startDate = body?.startDate ? new Date(body.startDate) : null;
 
-  const created = await prisma.itinerary.create({
-    data: { userId, title, daysCount, startDate },
-  });
+  try {
+    const created = await prisma.itinerary.create({
+      data: { userId, title, daysCount, startDate },
+    });
+    return NextResponse.json(created);
+  } catch (e: any){
+      if (e?.code === "P2002") {
+      return NextResponse.json(
+        { error: "Itinerary with this name already exists" },
+        { status: 409 }
+      );
+    }
+    throw e;
+  }
 
-  return NextResponse.json(created);
 }
+

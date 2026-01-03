@@ -89,19 +89,34 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   const userId = await requireUserId();
-
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await req.json();
-  const { placeId } = body ?? {};
+  type DeleteBody = { placeId?: string; all?: boolean };
+  let body: DeleteBody = {};
 
+  try {
+    body = (await req.json()) as DeleteBody;
+  } catch {
+    body = {};
+  }
+
+  if (body.all) {
+    const deleted = await prisma.savedPlace.deleteMany({
+      where: { savedById: userId },
+    });
+
+  return NextResponse.json({ ok: true, deleted: deleted.count });
+  }
+
+  const placeId = body.placeId;
   if (!placeId) {
     return NextResponse.json({ error: "placeId required" }, { status: 400 });
   }
 
-  await prisma.savedPlace.deleteMany({
-    where: { savedById: userId, placeId },
+  await prisma.savedPlace.delete({
+    where: { savedById_placeId: { savedById: userId, placeId } },
   });
 
   return NextResponse.json({ ok: true });
+
 }

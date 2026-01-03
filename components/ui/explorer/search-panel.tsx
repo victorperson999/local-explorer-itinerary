@@ -88,6 +88,22 @@ async function removePlace(placeId: string) {
   }
 }
 
+async function removeAllSaved(){
+   const res = await fetch("/api/saved", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({ all: true }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Failed to remove all saved: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
+  }
+
+  return res.json();
+}
+
 type PlaceResult = {
     provider: "mock" | "osm";
     providerId: string;
@@ -112,7 +128,6 @@ export default function SearchPanel() {
     const [savedError, setSavedError] = useState<string | null>(null);
 
     const [selectedSavedIds, setSelectedSavedIds] = useState<Set<string>>(new Set());
-    const [genPerDay, setGenPerDay] = useState(3);
     const [genShuffle, setGenShuffle] = useState(false);
 
     const [itineraries, setItineraries] = useState<Itinerary[]>([]);
@@ -130,6 +145,8 @@ export default function SearchPanel() {
 
     const [newItinTitle, setNewItinTitle] = useState("My Trip");
     const [newDaysCount, setNewDaysCount] = useState(3);
+    const [newItinTitleError, setNewItinTitleError] = useState<string | null>(null);
+
 
 
     const { status } = useSession();
@@ -167,6 +184,13 @@ export default function SearchPanel() {
       }
       return map;
     }, [itineraryItems]);
+
+    const titleAlreadyExists = useMemo(() => {
+      const t = newItinTitle.trim().toLowerCase();
+      if (!t) return false;
+      return itineraries.some((it) => it.title.trim().toLowerCase() === t);
+    }, [itineraries, newItinTitle]);
+
 
     useEffect(() => {
       // if saved list changes (remove/refresh), drop ids that no longer exist
@@ -435,6 +459,7 @@ export default function SearchPanel() {
             >
               Select all
             </Button>
+
             <Button
               type="button"
               size="sm"
@@ -442,8 +467,41 @@ export default function SearchPanel() {
               disabled={!authed || selectedSavedCount === 0}
               onClick={clearSelectedSaved}
             >
-              Clear
+              Clear Selected
             </Button>
+
+            <Button
+              type="button"
+              size="sm"
+              variant="destructive"
+              disabled={!authed || saved.length === 0 || savingKey === "remove-all"}
+              onClick={async () => {
+                if (!authed) {
+                  void signIn("github");
+                  return;
+                }
+
+                const ok = window.confirm("Remove ALL saved places? This cannot be undone.");
+                if (!ok) return;
+
+                try {
+                  setSavingKey("remove-all");
+                  await removeAllSaved();
+
+                  // clear selection immediately + refresh list
+                  setSelectedSavedIds(new Set());
+                  await refreshSaved();
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : "Failed to remove all saved places");
+                } finally {
+                  setSavingKey(null);
+                }
+              }}
+            >
+              Remove all
+            </Button>
+
+
           </div>
         </div>
   
@@ -551,9 +609,16 @@ export default function SearchPanel() {
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 <Input
                   value={newItinTitle}
-                  onChange={(e) => setNewItinTitle(e.target.value)}
+                  onChange={(e) => {
+                    setNewItinTitle(e.target.value);
+                    setNewItinTitleError(null);
+                  }}
                   placeholder="Trip title"
+                  className={newItinTitleError ? "border-red-500 focus-visible:ring-red-500" : ""}
                 />
+                {newItinTitleError ? (
+                  <p className="text-sm text-red-600">{newItinTitleError}</p>
+                ) : null}
                 <Input
                   type="number"
                   min={1}
@@ -570,7 +635,14 @@ export default function SearchPanel() {
                       void signIn("github");
                       return;
                     }
-
+                    
+                    const title = newItinTitle.trim();
+                    if (titleAlreadyExists) {
+                      setNewItinTitleError("Itinerary with this name already exists, enter a different name");
+                      setTimeout(() => setNewItinTitleError(null), 2500);
+                      return;
+                    }
+                    
                     try {
                       setCreatingItin(true);
                       setItinError(null);
@@ -596,110 +668,94 @@ export default function SearchPanel() {
                 <p className="text-sm text-muted-foreground">No itineraries yet.</p>
               ) : (
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  
+                  <select
+                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                    value={itineraryId ?? ""}
+                    onChange={(e) => setItineraryId(e.target.value)}
+                  >
+                    {itineraries.map((it) => (
+                      <option key={it.id} value={it.id}>
+                        {it.title} ({it.daysCount} days)
+                      </option>
+                    ))}
+                  </select>
 
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <select
-                      className="h-10 rounded-md border bg-background px-3 text-sm"
-                      value={itineraryId ?? ""}
-                      onChange={(e) => setItineraryId(e.target.value)}
-                    >
-                      {itineraries.map((it) => (
-                        <option key={it.id} value={it.id}>
-                          {it.title} ({it.daysCount} days)
-                        </option>
-                      ))}
-                    </select>
-
-                    {/* knobs */}
-                    <Input
-                      type="number"
-                      min={1}
-                      max={8}
-                      value={genPerDay}
-                      onChange={(e) => setGenPerDay(Number(e.target.value))}
-                      className="sm:w-24"
-                      title="Places per day"
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={genShuffle}
+                      onChange={(e) => setGenShuffle(e.target.checked)}
                     />
+                    Shuffle
+                  </label>
 
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={genShuffle}
-                        onChange={(e) => setGenShuffle(e.target.checked)}
-                      />
-                      Shuffle
-                    </label>
+                  {/* generate using ALL saved */}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={!itineraryId || generating}
+                    onClick={async () => {
+                      if (!authed) {
+                        void signIn("github");
+                        return;
+                      }
+                      if (!itineraryId) return;
 
-                    {/* generate using ALL saved */}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={!itineraryId || generating}
-                      onClick={async () => {
-                        if (!authed) {
-                          void signIn("github");
-                          return;
-                        }
-                        if (!itineraryId) return;
+                      try {
+                        setGenerating(true);
+                        setItemsError(null);
 
-                        try {
-                          setGenerating(true);
-                          setItemsError(null);
+                        await generateItinerary(itineraryId, {
+                          mode: "replace",
+                          perDay: 3,          // <- fixed now
+                          shuffle: genShuffle,
+                        });
 
-                          await generateItinerary(itineraryId, {
-                            mode: "replace",
-                            perDay: genPerDay,
-                            shuffle: genShuffle,
-                          });
+                        const items = await fetchItineraryItems(itineraryId);
+                        setItineraryItems(items);
+                      } catch (e) {
+                        setItemsError(e instanceof Error ? e.message : "Failed to generate itinerary");
+                      } finally {
+                        setGenerating(false);
+                      }
+                    }}
+                  >
+                    {generating ? "Generating..." : "Generate (all saved)"}
+                  </Button>
 
-                          const items = await fetchItineraryItems(itineraryId);
-                          setItineraryItems(items);
-                        } catch (e) {
-                          setItemsError(e instanceof Error ? e.message : "Failed to generate itinerary");
-                        } finally {
-                          setGenerating(false);
-                        }
-                      }}
-                    >
-                      {generating ? "Generating..." : "Generate (all saved)"}
-                    </Button>
+                  {/* generate using SELECTED saved */}
+                  <Button
+                    type="button"
+                    disabled={!itineraryId || generating || selectedSavedCount === 0}
+                    onClick={async () => {
+                      if (!authed) {
+                        void signIn("github");
+                        return;
+                      }
+                      if (!itineraryId) return;
 
-                    {/* generate using SELECTED saved */}
-                    <Button
-                      type="button"
-                      disabled={!itineraryId || generating || selectedSavedCount === 0}
-                      onClick={async () => {
-                        if (!authed) {
-                          void signIn("github");
-                          return;
-                        }
-                        if (!itineraryId) return;
+                      try {
+                        setGenerating(true);
+                        setItemsError(null);
 
-                        try {
-                          setGenerating(true);
-                          setItemsError(null);
+                        await generateItinerary(itineraryId, {
+                          mode: "replace",
+                          perDay: 3,          // <- fixed now
+                          shuffle: genShuffle,
+                          placeIds: selectedSavedIdArray,
+                        });
 
-                          await generateItinerary(itineraryId, {
-                            mode: "replace",
-                            perDay: genPerDay,
-                            shuffle: genShuffle,
-                            placeIds: selectedSavedIdArray,
-                          });
-
-                          const items = await fetchItineraryItems(itineraryId);
-                          setItineraryItems(items);
-                        } catch (e) {
-                          setItemsError(e instanceof Error ? e.message : "Failed to generate itinerary");
-                        } finally {
-                          setGenerating(false);
-                        }
-                      }}
-                    >
-                      Generate (selected)
-                    </Button>
-                  </div>
-
+                        const items = await fetchItineraryItems(itineraryId);
+                        setItineraryItems(items);
+                      } catch (e) {
+                        setItemsError(e instanceof Error ? e.message : "Failed to generate itinerary");
+                      } finally {
+                        setGenerating(false);
+                      }
+                    }}
+                  >
+                    Generate (selected)
+                  </Button>
                 </div>
               )}
 

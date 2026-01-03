@@ -57,7 +57,7 @@ model Itinerary {
   user  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   items ItineraryItem[]
 
-  @@index([userId])
+  @@unique([userId, title])
 }
 
 model ItineraryItem {
