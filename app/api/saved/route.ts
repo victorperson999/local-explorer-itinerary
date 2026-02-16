@@ -5,6 +5,8 @@ import { prisma } from "@/lib/db";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 
+import { redis } from "@lib/redis";
+
 async function requireUserId() {
   const session = await getServerSession(authOptions);
   const userId = (session?.user as any)?.id as string | undefined;
@@ -12,19 +14,38 @@ async function requireUserId() {
   return userId
 }
 
+function savedCacheKey(userId: string){
+  return `saved:v1:user:${userId}`;
+}
+
+const SAVED_TTL_SECONDS = 60;// can be tweaked later
+
 
 export async function GET() {
   const userId = await requireUserId();
+  if (!userId){
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
-  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
+  const key = savedCacheKey(userId);
+  // redis lookup:
+  try{
+    const hit = await redis.get(key);
+    if (hit){
+      const parsed = JSON.parse(hit);
+      return NextResponse.json(parsed, { headers: { "x-cache": "HIT"} });
+    }
+  }catch {
+    // do nothing, just fall through to DB implementation
+  }
+  // DB query (MISS)
   const saved = await prisma.savedPlace.findMany({
     where: { savedById: userId },
     include: { place: true },
     orderBy: { createdAt: "desc" },
   });
 
-  return NextResponse.json(
+  const payload = 
     saved.map((s) => ({
       placeId: s.placeId,
       savedId: s.id,
@@ -36,8 +57,15 @@ export async function GET() {
       lat: s.place.lat,
       lon: s.place.lon,
       createdAt: s.createdAt,
-    }))
-  );
+  }));
+
+  // write to cache
+  try {
+    await redis.set(key, JSON.stringify(payload), { EX: SAVED_TTL_SECONDS });
+  } catch{
+    // ignore cache fails for now...:(
+  }
+  
 }
 
 export async function POST(req: Request) {
@@ -84,6 +112,12 @@ export async function POST(req: Request) {
     create: { savedById: userId, placeId: place.id },
   });
 
+  try {
+    await redis.del(savedCacheKey(userId));
+  } catch {
+    //...
+  }
+
   return NextResponse.json({ ok: true, placeId: place.id });
 }
 
@@ -104,6 +138,12 @@ export async function DELETE(req: Request) {
     const deleted = await prisma.savedPlace.deleteMany({
       where: { savedById: userId },
     });
+    
+    try{
+      await redis.del(savedCacheKey(userId));
+    }catch{
+      //
+    }
 
   return NextResponse.json({ ok: true, deleted: deleted.count });
   }
@@ -116,6 +156,12 @@ export async function DELETE(req: Request) {
   await prisma.savedPlace.delete({
     where: { savedById_placeId: { savedById: userId, placeId } },
   });
+
+  try {
+    await redis.del(savedCacheKey(userId));
+  }catch{
+    
+  }
 
   return NextResponse.json({ ok: true });
 
